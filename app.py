@@ -219,7 +219,8 @@ def load_models(hf_token: str):
     from transformers import pipeline as hf_pipeline
     from huggingface_hub import login
 
-    login(token=hf_token)
+    if hf_token:
+        login(token=hf_token)
 
     # spaCy — sm for CPU (trf needs GPU)
     try:
@@ -344,17 +345,13 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🔁  Pipeline")
     st.markdown("""
-**1 · spaCy NER**  
-Rolling entity register from last 20 messages
+**1 · spaCy NER** Rolling entity register from last 20 messages
 
-**2 · Interruption check**  
-`brb`, `wait`, `ok` → tag `General`, skip LLM
+**2 · Interruption check** `brb`, `wait`, `ok` → tag `General`, skip LLM
 
-**3 · Groq · llama-3.1-8b-instant**  
-Rewrites query using history + entity context
+**3 · Groq · llama-3.1-8b-instant** Rewrites query using history + entity context
 
-**4 · DistilBERT classifier**  
-Tags `topic_l1` and `topic_l2`
+**4 · DistilBERT classifier** Tags `topic_l1` and `topic_l2`
 """)
 
     st.markdown("---")
@@ -541,11 +538,12 @@ with left_col:
     for qi, qmsg in enumerate(QUICK_MSGS):
         with qcols[qi % 4]:
             if st.button(qmsg, key=f"q{qi}", use_container_width=True):
-                st.session_state["prefill"] = qmsg
+                # Fixed: update session_state matching text_input key directly
+                st.session_state.user_input = qmsg
 
+    # Fixed: removed value=... and using key only
     user_input = st.text_input(
         "Message",
-        value=st.session_state.pop("prefill", ""),
         placeholder="e.g. 'what are his duties?' / 'what about uk?' / 'brb'",
         label_visibility="collapsed",
         key="user_input",
@@ -573,10 +571,11 @@ with left_col:
                 st.rerun()
 
     if st.button("🚀  Send", type="primary", use_container_width=True):
-        if user_input.strip():
+        current_msg = st.session_state.user_input.strip()
+        if current_msg:
             with st.spinner("⚡  Expanding + classifying…"):
                 result = process_turn(
-                    user_input.strip(),
+                    current_msg,
                     st.session_state.history_deque,
                     st.session_state.entity_reg,
                     st.session_state.nlp,
@@ -588,8 +587,11 @@ with left_col:
                 st.session_state.turn_idx += 1
                 st.session_state.turn_history.append(result)
                 st.session_state.chat_display.append(
-                    {"role": "user", "text": user_input.strip(), "result": result}
+                    {"role": "user", "text": current_msg, "result": result}
                 )
+            
+            # Clear text input after processing
+            st.session_state.user_input = ""
             st.rerun()
 
 
