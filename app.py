@@ -496,7 +496,27 @@ st.markdown("---")
 # ══════════════════════════════════════════════════════════════════
 #  MAIN LAYOUT — CHAT (left) + RESULTS (right)
 # ══════════════════════════════════════════════════════════════════
-
+def handle_submit():
+    current_msg = st.session_state.user_input.strip()
+    if current_msg:
+        result = process_turn(
+            current_msg,
+            st.session_state.history_deque,
+            st.session_state.entity_reg,
+            st.session_state.nlp,
+            st.session_state.clf_l1,
+            st.session_state.clf_l2,
+            st.session_state.groq_client,
+            st.session_state.turn_idx,
+        )
+        st.session_state.turn_idx += 1
+        st.session_state.turn_history.append(result)
+        st.session_state.chat_display.append(
+            {"role": "user", "text": current_msg, "result": result}
+        )
+        # It is now 100% safe to clear the input here!
+        st.session_state.user_input = ""
+        
 left_col, right_col = st.columns([1, 1], gap="large")
 
 # ── LEFT: CHAT ────────────────────────────────────────────────────
@@ -547,6 +567,7 @@ with left_col:
         placeholder="e.g. 'what are his duties?' / 'what about uk?' / 'brb'",
         label_visibility="collapsed",
         key="user_input",
+        on_change=handle_submit
     )
 
     # Optional: add bot response to context
@@ -570,29 +591,7 @@ with left_col:
                 )
                 st.rerun()
 
-    if st.button("🚀  Send", type="primary", use_container_width=True):
-        current_msg = st.session_state.user_input.strip()
-        if current_msg:
-            with st.spinner("⚡  Expanding + classifying…"):
-                result = process_turn(
-                    current_msg,
-                    st.session_state.history_deque,
-                    st.session_state.entity_reg,
-                    st.session_state.nlp,
-                    st.session_state.clf_l1,
-                    st.session_state.clf_l2,
-                    st.session_state.groq_client,
-                    st.session_state.turn_idx,
-                )
-                st.session_state.turn_idx += 1
-                st.session_state.turn_history.append(result)
-                st.session_state.chat_display.append(
-                    {"role": "user", "text": current_msg, "result": result}
-                )
-            
-            # Clear text input after processing
-            st.session_state.user_input = ""
-            st.rerun()
+    st.button("🚀  Send", type="primary", use_container_width=True, on_click=handle_submit)
 
 
 # ── RIGHT: RESULTS ────────────────────────────────────────────────
