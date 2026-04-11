@@ -1,24 +1,44 @@
 import streamlit as st
-import os
 import re
-import json
-import torch
 from collections import deque
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
-# ── PAGE CONFIG ───────────────────────────────────────────────────
+# ── PAGE CONFIG  (must be first Streamlit call) ───────────────────
 st.set_page_config(
-    page_title="Real-Time Query Expansion",
+    page_title="Query Expansion & Topic Tagging",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# ── SAMPLE QUESTIONS ──────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  CONSTANTS
+# ══════════════════════════════════════════════════════════════════
+GROQ_MODEL     = "llama-3.1-8b-instant"
+CONTEXT_WINDOW = 20
+ENTITY_TYPES   = {"PERSON", "GPE", "ORG", "EVENT", "NORP", "FAC", "LOC"}
+
+INTERRUPT_PATTERNS = [
+    r"^\s*(brb|brt|back|ok|okay|k|thanks|thank you|got it|noted|alright|sure|"
+    r"wait|hold on|one sec|give me a (min|sec|moment)|be right back|"
+    r"i.?m back|coming back|just a min|afk)[\.!\?]?\s*$"
+]
+
+TOPIC_COLORS = {
+    "Politics":      "#3B82F6",
+    "Sports":        "#10B981",
+    "Technology":    "#8B5CF6",
+    "Entertainment": "#F59E0B",
+    "Health":        "#EF4444",
+    "History":       "#6B7280",
+    "Geography":     "#14B8A6",
+    "General":       "#9CA3AF",
+}
+
 SAMPLE_CONVERSATIONS = [
     {
-        "label": "🏛️ Politics — India → UK switch",
+        "label": "🏛️ Politics — India → UK",
         "turns": [
             ("user",      "who is pm of india?"),
             ("assistant", "The Prime Minister of India is Narendra Modi, in office since 2014."),
@@ -34,7 +54,7 @@ SAMPLE_CONVERSATIONS = [
         ],
     },
     {
-        "label": "🏏 Sports — Cricket then Football",
+        "label": "🏏 Sports — Cricket → Football",
         "turns": [
             ("user",      "who is the best cricket player?"),
             ("assistant", "Virat Kohli is widely considered one of the greatest batsmen today."),
@@ -55,79 +75,122 @@ SAMPLE_CONVERSATIONS = [
             ("user",      "tell me about openai"),
             ("assistant", "OpenAI is an AI research company known for ChatGPT and GPT-4."),
             ("user",      "who founded it?"),
-            ("assistant", "It was founded by Sam Altman, Elon Musk, Greg Brockman and others in 2015."),
+            ("assistant", "It was co-founded by Sam Altman, Elon Musk, Greg Brockman and others in 2015."),
             ("user",      "what did he do after leaving?"),
-            ("assistant", "Elon Musk departed OpenAI's board in 2018 and later started xAI."),
+            ("assistant", "Elon Musk left OpenAI's board in 2018 and later started xAI."),
             ("user",      "and google's version?"),
+            ("assistant", "Google's AI lab is called Google DeepMind, known for Gemini models."),
+            ("user",      "how do they compare?"),
         ],
     },
 ]
 
-TOPIC_COLORS = {
-    "Politics":      "#3B82F6",
-    "Sports":        "#10B981",
-    "Technology":    "#8B5CF6",
-    "Entertainment": "#F59E0B",
-    "Health":        "#EF4444",
-    "History":       "#6B7280",
-    "Geography":     "#14B8A6",
-    "General":       "#9CA3AF",
-}
-
-# ── CONSTANTS (must match notebook exactly) ───────────────────────
-CONTEXT_WINDOW    = 20
-MAX_NEW_TOKENS    = 200
-ENTITY_TYPES      = {"PERSON", "GPE", "ORG", "EVENT", "NORP", "FAC", "LOC"}
-INTERRUPT_PATTERNS = [
-    r'^\s*(brb|brt|back|ok|okay|k|thanks|thank you|got it|noted|alright|sure|'
-    r'wait|hold on|one sec|give me a (min|sec|moment)|be right back|'
-    r'i.?m back|coming back|just a min|afk)[\.!\?]?\s*$'
+QUICK_MSGS = [
+    "who is pm of india?",
+    "what are his duties?",
+    "what about uk?",
+    "compare both",
+    "brb",
+    "back — tell me about cricket",
+    "how many centuries does he have?",
+    "who founded openai?",
 ]
 
-# ── INTERRUPTION DETECTOR ─────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  CSS
+# ══════════════════════════════════════════════════════════════════
+st.markdown("""
+<style>
+  .main .block-container { padding-top: 1.4rem; max-width: 1280px; }
+
+  .bubble-user {
+    background: #1e3a5f; color: #e8f0fe;
+    border-radius: 18px 18px 4px 18px;
+    padding: 9px 15px; margin: 5px 0 2px auto;
+    max-width: 76%; width: fit-content; font-size: .92rem; margin-left: auto;
+  }
+  .bubble-assistant {
+    background: #1f2937; color: #d1d5db;
+    border-radius: 18px 18px 18px 4px;
+    padding: 9px 15px; margin: 2px auto 5px 0;
+    max-width: 76%; width: fit-content; font-size: .92rem;
+  }
+
+  .card {
+    background: #111827; border: 1px solid #1f2937;
+    border-radius: 10px; padding: 12px 16px; margin: 7px 0;
+  }
+  .card .lbl {
+    font-size: .68rem; text-transform: uppercase; letter-spacing: .08em;
+    color: #6b7280; margin-bottom: 4px;
+  }
+  .card .val { font-size: .93rem; color: #f3f4f6; font-weight: 500; }
+  .expanded-text { color: #34d399; font-style: italic; }
+
+  .tag-pill {
+    display: inline-block; padding: 3px 13px; border-radius: 999px;
+    font-size: .78rem; font-weight: 700; color: #fff; margin: 2px 3px;
+  }
+  .entity-pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: .73rem; background: #374151; color: #9ca3af; margin: 2px 3px;
+  }
+
+  .conf-wrap {
+    background: #1f2937; border-radius: 3px; height: 5px;
+    margin-top: 3px; width: 100%;
+  }
+  .conf-bar { height: 5px; border-radius: 3px; }
+
+  .badge-expanded  { background:#065f46; color:#6ee7b7; font-size:.72rem; padding:2px 9px; border-radius:999px; }
+  .badge-interrupt { background:#374151; color:#9ca3af; font-size:.72rem; padding:2px 9px; border-radius:999px; }
+  .badge-complete  { background:#1e3a5f; color:#93c5fd; font-size:.72rem; padding:2px 9px; border-radius:999px; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════
+#  CORE CLASSES
+# ══════════════════════════════════════════════════════════════════
+
 def is_interruption(text: str) -> bool:
-    t = text.strip().lower()
-    words = t.split()
-    question_words = {'who','what','where','when','why','how','which','whose','whom'}
-    if len(words) <= 3 and not any(w in question_words for w in words):
+    t, words = text.strip().lower(), text.strip().lower().split()
+    q_words = {'who','what','where','when','why','how','which','whose','whom'}
+    if len(words) <= 3 and not any(w in q_words for w in words):
         return True
-    for pattern in INTERRUPT_PATTERNS:
-        if re.match(pattern, t, re.IGNORECASE):
+    for p in INTERRUPT_PATTERNS:
+        if re.match(p, t, re.IGNORECASE):
             return True
     return False
 
-# ── ENTITY REGISTER ───────────────────────────────────────────────
+
 @dataclass
 class EntityEntry:
-    text:     str
-    label:    str
-    turn_idx: int
+    text: str; label: str; turn_idx: int
+
 
 class EntityRegister:
     def __init__(self):
         self.entries: List[EntityEntry] = []
 
     def update(self, text: str, turn_idx: int, nlp):
-        doc = nlp(text)
-        for ent in doc.ents:
+        for ent in nlp(text).ents:
             if ent.label_ in ENTITY_TYPES:
                 if not any(e.text.lower() == ent.text.lower() and e.turn_idx == turn_idx
                            for e in self.entries):
-                    self.entries.append(EntityEntry(text=ent.text, label=ent.label_, turn_idx=turn_idx))
+                    self.entries.append(EntityEntry(ent.text, ent.label_, turn_idx))
 
     def prune(self, min_turn: int):
         self.entries = [e for e in self.entries if e.turn_idx >= min_turn]
 
-    def get_recent(self, n: int = 5) -> List[EntityEntry]:
+    def get_recent(self, n=5) -> List[EntityEntry]:
         return sorted(self.entries, key=lambda e: e.turn_idx, reverse=True)[:n]
 
     def as_context_string(self) -> str:
         recent = self.get_recent(8)
-        if not recent:
-            return "(none)"
-        return ", ".join(f"{e.text} [{e.label}]" for e in recent)
+        return "(none)" if not recent else ", ".join(f"{e.text} [{e.label}]" for e in recent)
 
-# ── TURN RESULT ───────────────────────────────────────────────────
+
 @dataclass
 class TurnResult:
     raw_message:     str
@@ -140,105 +203,82 @@ class TurnResult:
     was_expanded:    bool
     is_interruption: bool
 
-# ── MODEL LOADING (cached) ────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════
+#  MODEL LOADING  — only spaCy + DistilBERT, no local LLM
+# ══════════════════════════════════════════════════════════════════
+
 @st.cache_resource(show_spinner=False)
 def load_models(hf_token: str):
+    """
+    Loads spaCy NER (en_core_web_sm — CPU-safe) and both DistilBERT
+    classifiers from HuggingFace. Groq handles the LLM — no local weights.
+    Cold start on Streamlit Cloud: ~30-50s.
+    """
     import spacy
-    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline as hf_pipeline
+    from transformers import pipeline as hf_pipeline
     from huggingface_hub import login
 
     login(token=hf_token)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # spaCy NER
+    # spaCy — sm for CPU (trf needs GPU)
     try:
-        nlp = spacy.load("en_core_web_trf")
+        nlp = spacy.load("en_core_web_sm")
     except OSError:
+        import subprocess
+        subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"], check=True)
         nlp = spacy.load("en_core_web_sm")
 
-    # LLM
-    llm_id = "meta-llama/Llama-3.2-1B-Instruct"
-    llm_tok = AutoTokenizer.from_pretrained(llm_id, token=hf_token)
-    if llm_tok.pad_token is None:
-        llm_tok.pad_token = llm_tok.eos_token
-
-    llm_model = AutoModelForCausalLM.from_pretrained(
-        llm_id,
-        token=hf_token,
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        device_map="auto" if device == "cuda" else None,
-    )
-    if device == "cpu":
-        llm_model = llm_model.to(device)
-    llm_model.eval()
-
-    has_chat = hasattr(llm_tok, 'apply_chat_template') and llm_tok.chat_template is not None
-
-    # Classifiers
-    clf_l1 = hf_pipeline('text-classification',
+    # DistilBERT topic classifiers — ~66 MB each, fast on CPU
+    clf_l1 = hf_pipeline("text-classification",
                           model="Adignite/query-topic-l1-classifier",
-                          device=0 if device == "cuda" else -1)
-    clf_l2 = hf_pipeline('text-classification',
+                          device=-1)
+    clf_l2 = hf_pipeline("text-classification",
                           model="Adignite/query-topic-l2-classifier",
-                          device=0 if device == "cuda" else -1)
+                          device=-1)
+    return nlp, clf_l1, clf_l2
 
-    return nlp, llm_tok, llm_model, has_chat, clf_l1, clf_l2, device
 
+# ══════════════════════════════════════════════════════════════════
+#  GROQ EXPANSION  — exact same prompt as working notebook
+# ══════════════════════════════════════════════════════════════════
 
-# ── LLM EXPANSION (exact logic from notebook) ─────────────────────
 EXPANSION_SYSTEM = (
     "Rewrite the latest user message into a fully self-contained query using context.\n"
     "- Replace all pronouns and implicit references with explicit names.\n"
     "- Expand incomplete questions, topic shifts, or comparisons into full sentences.\n"
-    "- Output ONLY the rewritten query. No quotes, no explanations. Return as-is if already self-contained."
+    "- Output ONLY the rewritten query. No quotes, no explanations. "
+    "Return as-is if already self-contained."
 )
 
-def llm_expand(history, current_msg, entity_register, llm_tok, llm_model, has_chat, device):
+
+def groq_expand(history: list, current_msg: str, entity_reg: EntityRegister,
+                groq_client) -> str:
     history_str  = "\n".join(
         f"{'User' if t['role']=='user' else 'Assistant'}: {t['text']}"
         for t in history
     )
-    entities_str = entity_register.as_context_string()
-    user_prompt  = (
+    user_prompt = (
         f"Conversation context (last {len(history)} messages):\n"
         f"{history_str}\n\n"
-        f"Named entities in context: {entities_str}\n\n"
+        f"Named entities in context: {entity_reg.as_context_string()}\n\n"
         f"Latest user message: {current_msg}\n\n"
         f"Rewrite as a self-contained question:"
     )
 
-    if has_chat:
-        messages = [
+    resp = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
             {"role": "system", "content": EXPANSION_SYSTEM},
             {"role": "user",   "content": user_prompt},
-        ]
-        encoded   = llm_tok.apply_chat_template(
-            messages, return_tensors="pt", add_generation_prompt=True, return_dict=True
-        )
-        encoded   = {k: v.to(device) for k, v in encoded.items()}
-        input_ids = encoded["input_ids"]
-    else:
-        combined  = f"### System:\n{EXPANSION_SYSTEM}\n\n### User:\n{user_prompt}\n\n### Response:\n"
-        encoded   = llm_tok(combined, return_tensors="pt")
-        encoded   = {k: v.to(device) for k, v in encoded.items()}
-        input_ids = encoded["input_ids"]
+        ],
+        temperature=0.3,
+        max_tokens=150,
+    )
+    expanded = resp.choices[0].message.content.strip()
 
-    prompt_len = input_ids.shape[-1]
-
-    with torch.no_grad():
-        output_ids = llm_model.generate(
-            input_ids,
-            attention_mask = encoded.get("attention_mask"),
-            max_new_tokens = MAX_NEW_TOKENS,
-            temperature    = 0.3,
-            do_sample      = True,
-            pad_token_id   = llm_tok.pad_token_id,
-            eos_token_id   = llm_tok.eos_token_id,
-        )
-
-    new_tokens = output_ids[0][prompt_len:]
-    expanded   = llm_tok.decode(new_tokens, skip_special_tokens=True).strip()
-    expanded   = expanded.split('\n')[0].strip()
+    # Clean up — same logic as notebook
+    expanded = expanded.split("\n")[0].strip()
     for prefix in ["Rewritten:", "Answer:", "Query:", "Here is", "Here's", "The question is"]:
         if expanded.lower().startswith(prefix.lower()):
             expanded = expanded[len(prefix):].strip()
@@ -246,14 +286,15 @@ def llm_expand(history, current_msg, entity_register, llm_tok, llm_model, has_ch
     return expanded if expanded else current_msg
 
 
-# ── PROCESS ONE USER TURN ─────────────────────────────────────────
-def process_turn(text, history_deque, entity_reg, nlp, llm_tok, llm_model,
-                 has_chat, clf_l1, clf_l2, device, turn_idx):
+# ══════════════════════════════════════════════════════════════════
+#  FULL TURN PROCESSOR
+# ══════════════════════════════════════════════════════════════════
+
+def process_turn(text, history_deque, entity_reg, nlp, clf_l1, clf_l2,
+                 groq_client, turn_idx) -> TurnResult:
 
     entity_reg.update(text, turn_idx, nlp)
-    min_turn = max(0, turn_idx - CONTEXT_WINDOW)
-    entity_reg.prune(min_turn)
-
+    entity_reg.prune(max(0, turn_idx - CONTEXT_WINDOW))
     entities_used = [e.text for e in entity_reg.get_recent(5)]
     interrupt     = is_interruption(text)
 
@@ -263,13 +304,12 @@ def process_turn(text, history_deque, entity_reg, nlp, llm_tok, llm_model,
         l2, l2s  = "General", 1.0
         was_exp  = False
     else:
-        history_list = list(history_deque)
-        expanded = llm_expand(history_list, text, entity_reg, llm_tok, llm_model, has_chat, device)
+        expanded = groq_expand(list(history_deque), text, entity_reg, groq_client)
         was_exp  = expanded.lower().strip() != text.lower().strip()
         r1  = clf_l1(expanded)[0]
         r2  = clf_l2(expanded)[0]
-        l1, l1s = r1['label'], r1['score']
-        l2, l2s = r2['label'], r2['score']
+        l1, l1s = r1["label"], r1["score"]
+        l2, l2s = r2["label"], r2["score"]
 
     history_deque.append({"role": "user", "text": text})
 
@@ -284,258 +324,149 @@ def process_turn(text, history_deque, entity_reg, nlp, llm_tok, llm_model,
 
 
 # ══════════════════════════════════════════════════════════════════
-#  UI
+#  SIDEBAR
 # ══════════════════════════════════════════════════════════════════
 
-# ── CUSTOM CSS ────────────────────────────────────────────────────
-st.markdown("""
-<style>
-  /* overall background */
-  .main .block-container { padding-top: 1.5rem; max-width: 1200px; }
-
-  /* chat bubble user */
-  .bubble-user {
-    background: #1e3a5f;
-    color: #e8f0fe;
-    border-radius: 18px 18px 4px 18px;
-    padding: 10px 16px;
-    margin: 6px 0 2px auto;
-    max-width: 72%;
-    width: fit-content;
-    font-size: 0.95rem;
-    margin-left: auto;
-  }
-  /* chat bubble assistant */
-  .bubble-assistant {
-    background: #1f2937;
-    color: #d1d5db;
-    border-radius: 18px 18px 18px 4px;
-    padding: 10px 16px;
-    margin: 2px auto 6px 0;
-    max-width: 72%;
-    width: fit-content;
-    font-size: 0.95rem;
-  }
-  /* result card */
-  .result-card {
-    background: #111827;
-    border: 1px solid #374151;
-    border-radius: 12px;
-    padding: 14px 18px;
-    margin: 8px 0;
-  }
-  .result-card .label {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #6b7280;
-    margin-bottom: 3px;
-  }
-  .result-card .value {
-    font-size: 0.95rem;
-    color: #f3f4f6;
-    font-weight: 500;
-  }
-  .expanded-text {
-    color: #34d399;
-    font-style: italic;
-  }
-  .tag-pill {
-    display: inline-block;
-    padding: 3px 12px;
-    border-radius: 999px;
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: white;
-    margin: 2px 3px;
-  }
-  .entity-pill {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    background: #374151;
-    color: #9ca3af;
-    margin: 2px 3px;
-  }
-  .confidence-bar-wrap {
-    background: #1f2937;
-    border-radius: 4px;
-    height: 6px;
-    margin-top: 4px;
-    width: 100%;
-  }
-  .confidence-bar {
-    height: 6px;
-    border-radius: 4px;
-  }
-  /* sample pill button area */
-  .sample-btn {
-    background: #1f2937;
-    border: 1px solid #374151;
-    border-radius: 8px;
-    padding: 6px 12px;
-    font-size: 0.82rem;
-    color: #9ca3af;
-    cursor: pointer;
-    display: inline-block;
-    margin: 3px;
-  }
-  .processing-badge {
-    background: #065f46;
-    color: #6ee7b7;
-    font-size: 0.75rem;
-    padding: 2px 10px;
-    border-radius: 999px;
-    display: inline-block;
-  }
-  .interrupt-badge {
-    background: #374151;
-    color: #9ca3af;
-    font-size: 0.75rem;
-    padding: 2px 10px;
-    border-radius: 999px;
-    display: inline-block;
-  }
-</style>
-""", unsafe_allow_html=True)
-
-
-# ── SIDEBAR ───────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## ⚙️ Configuration")
-    hf_token = st.text_input(
-        "HuggingFace Token",
-        type="password",
-        help="Required for Llama-3.2-1B-Instruct and classifier models",
-        placeholder="hf_..."
-    )
+    st.markdown("## ⚙️  Configuration")
+
+    # Try secrets first (Streamlit Cloud), fall back to manual input
+    groq_key_default = st.secrets.get("GROQ_API_KEY", "")
+    hf_key_default   = st.secrets.get("HF_TOKEN",     "")
+
+    groq_key = st.text_input("Groq API Key", type="password",
+                              value=groq_key_default,
+                              placeholder="gsk_...")
+    hf_token = st.text_input("HuggingFace Token", type="password",
+                              value=hf_key_default,
+                              placeholder="hf_...")
 
     st.markdown("---")
-    st.markdown("### 📋 Pipeline")
+    st.markdown("### 🔁  Pipeline")
     st.markdown("""
-**Step 1 — spaCy NER**  
-Extracts entities from rolling 20-message window  
+**1 · spaCy NER**  
+Rolling entity register from last 20 messages
 
-**Step 2 — Interruption Check**  
-Small talk → tag `General`, skip LLM  
+**2 · Interruption check**  
+`brb`, `wait`, `ok` → tag `General`, skip LLM
 
-**Step 3 — Llama-3.2-1B-Instruct**  
-Rewrites query using history + entities  
+**3 · Groq · llama-3.1-8b-instant**  
+Rewrites query using history + entity context
 
-**Step 4 — DistilBERT Classifier**  
+**4 · DistilBERT classifier**  
 Tags `topic_l1` and `topic_l2`
 """)
+
     st.markdown("---")
-    st.markdown("### 🏷️ Models")
-    st.markdown("""
-- `Adignite/query-topic-l1-classifier`
-- `Adignite/query-topic-l2-classifier`
-- `meta-llama/Llama-3.2-1B-Instruct`
-- `en_core_web_trf` (spaCy)
-""")
+    st.markdown("### 🏷️  Models")
+    st.caption("Adignite/query-topic-l1-classifier")
+    st.caption("Adignite/query-topic-l2-classifier")
+    st.caption("meta-llama/llama-3.1-8b-instant (Groq)")
+    st.caption("en_core_web_sm (spaCy)")
+
     st.markdown("---")
-    st.markdown("### 📊 Session Stats")
-    if "turn_history" in st.session_state:
-        turns = st.session_state.turn_history
+    if "turn_history" in st.session_state and st.session_state.turn_history:
+        turns    = st.session_state.turn_history
         expanded = [t for t in turns if t.was_expanded]
-        st.metric("Total turns", len(turns))
-        st.metric("Expansions performed", len(expanded))
-        st.metric("Context window used",
-                  f"{min(len(st.session_state.history_deque), CONTEXT_WINDOW)}/{CONTEXT_WINDOW}")
+        st.markdown("### 📊  Session Stats")
+        c1, c2 = st.columns(2)
+        c1.metric("Turns",     len(turns))
+        c2.metric("Expanded",  len(expanded))
+        st.progress(len(st.session_state.history_deque) / CONTEXT_WINDOW,
+                    text=f"Context window: {len(st.session_state.history_deque)}/{CONTEXT_WINDOW}")
 
 
-# ── MAIN AREA ─────────────────────────────────────────────────────
-st.markdown("# 🔍 Real-Time Query Expansion & Topic Tagging")
-st.markdown("*Type a message — the system expands implicit queries and tags them with a topic in real time.*")
+# ══════════════════════════════════════════════════════════════════
+#  HEADER
+# ══════════════════════════════════════════════════════════════════
 
-# ── MODEL LOAD ────────────────────────────────────────────────────
-if not hf_token:
-    st.info("👈 Enter your HuggingFace token in the sidebar to load models and begin.")
+st.markdown("# 🔍  Real-Time Query Expansion & Topic Tagging")
+st.markdown(
+    "Every user message is **expanded** into a self-contained query "
+    "and **tagged** with a hierarchical topic — using the last 20 messages as context."
+)
+
+# ── GATE: require both keys ───────────────────────────────────────
+if not groq_key or not hf_token:
+    st.warning("👈  Enter your **Groq API Key** and **HuggingFace Token** in the sidebar to begin.")
+
     st.markdown("---")
-    st.markdown("### 💡 What this system does")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("""
-**Query Expansion**
-> `"what are his duties?"`
-> ↓
-> `"What are Narendra Modi's duties as Prime Minister of India?"`
-""")
-    with col2:
-        st.markdown("""
-**Topic Tagging**
+    st.markdown("### 💡  How it works")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("""**Query Expansion**
+> Raw: `"what are his duties?"`
+>
+> Expanded: `"What are Narendra Modi's duties as Prime Minister of India?"`""")
+    with c2:
+        st.markdown("""**Topic Tagging**
 > `"compare both"`
-> ↓
-> `Politics > India`
-> confidence: 0.94
-""")
-    with col3:
-        st.markdown("""
-**Interruption Handling**
+>
+> `Politics › India`
+> confidence: 0.94""")
+    with c3:
+        st.markdown("""**Interruption Handling**
 > `"brb"` / `"wait a sec"`
-> ↓
-> Skips LLM, tagged
-> `General > General`
-""")
+>
+> Skips LLM — tagged
+> `General › General`""")
     st.stop()
 
 
-# ── INIT SESSION STATE ────────────────────────────────────────────
+# ── LOAD MODELS ───────────────────────────────────────────────────
 if "models_loaded" not in st.session_state:
-    with st.spinner("🔄 Loading models (this takes ~60s the first time)…"):
+    with st.spinner("🔄  Loading spaCy NER + DistilBERT classifiers… (~30s first time)"):
         try:
-            (nlp, llm_tok, llm_model, has_chat,
-             clf_l1, clf_l2, device) = load_models(hf_token)
+            nlp, clf_l1, clf_l2 = load_models(hf_token)
+            from groq import Groq
+            groq_client = Groq(api_key=groq_key)
+
             st.session_state.models_loaded = True
-            st.session_state.nlp       = nlp
-            st.session_state.llm_tok   = llm_tok
-            st.session_state.llm_model = llm_model
-            st.session_state.has_chat  = has_chat
-            st.session_state.clf_l1    = clf_l1
-            st.session_state.clf_l2    = clf_l2
-            st.session_state.device    = device
+            st.session_state.nlp        = nlp
+            st.session_state.clf_l1     = clf_l1
+            st.session_state.clf_l2     = clf_l2
+            st.session_state.groq_client = groq_client
         except Exception as e:
-            st.error(f"❌ Failed to load models: {e}")
+            st.error(f"❌  Model loading failed: {e}")
             st.stop()
 
-if "history_deque" not in st.session_state:
-    st.session_state.history_deque = deque(maxlen=CONTEXT_WINDOW)
-if "entity_reg" not in st.session_state:
-    st.session_state.entity_reg = EntityRegister()
-if "turn_idx" not in st.session_state:
-    st.session_state.turn_idx = 0
-if "turn_history" not in st.session_state:
-    st.session_state.turn_history = []
-if "chat_display" not in st.session_state:
-    st.session_state.chat_display = []   # [{role, text, result?}]
-if "sample_pending" not in st.session_state:
-    st.session_state.sample_pending = None
+# ── INIT SESSION STATE ────────────────────────────────────────────
+for key, default in [
+    ("history_deque", deque(maxlen=CONTEXT_WINDOW)),
+    ("entity_reg",    EntityRegister()),
+    ("turn_idx",      0),
+    ("turn_history",  []),
+    ("chat_display",  []),
+    ("sample_pending", None),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 
-# ── SAMPLE CONVERSATIONS ──────────────────────────────────────────
-st.markdown("### 📎 Load a Sample Conversation")
-sample_cols = st.columns(len(SAMPLE_CONVERSATIONS))
-for i, (col, sample) in enumerate(zip(sample_cols, SAMPLE_CONVERSATIONS)):
+# ══════════════════════════════════════════════════════════════════
+#  SAMPLE CONVERSATIONS
+# ══════════════════════════════════════════════════════════════════
+
+st.markdown("### 📎  Sample Conversations")
+s_cols = st.columns(len(SAMPLE_CONVERSATIONS))
+for i, (col, sample) in enumerate(zip(s_cols, SAMPLE_CONVERSATIONS)):
     with col:
         if st.button(sample["label"], key=f"sample_{i}", use_container_width=True):
             st.session_state.sample_pending = i
 
-# Run sample if one was selected
 if st.session_state.sample_pending is not None:
     idx    = st.session_state.sample_pending
     sample = SAMPLE_CONVERSATIONS[idx]
     st.session_state.sample_pending = None
 
-    # Reset conversation
+    # Reset state
     st.session_state.history_deque = deque(maxlen=CONTEXT_WINDOW)
     st.session_state.entity_reg    = EntityRegister()
     st.session_state.turn_idx      = 0
     st.session_state.turn_history  = []
     st.session_state.chat_display  = []
 
-    with st.spinner(f"Running sample: {sample['label']} …"):
+    with st.spinner(f"Running: {sample['label']} …"):
         for role, text in sample["turns"]:
             if role == "assistant":
                 st.session_state.history_deque.append({"role": "assistant", "text": text})
@@ -550,30 +481,32 @@ if st.session_state.sample_pending is not None:
                     st.session_state.history_deque,
                     st.session_state.entity_reg,
                     st.session_state.nlp,
-                    st.session_state.llm_tok,
-                    st.session_state.llm_model,
-                    st.session_state.has_chat,
                     st.session_state.clf_l1,
                     st.session_state.clf_l2,
-                    st.session_state.device,
+                    st.session_state.groq_client,
                     st.session_state.turn_idx,
                 )
                 st.session_state.turn_idx += 1
                 st.session_state.turn_history.append(result)
-                st.session_state.chat_display.append({"role": "user", "text": text, "result": result})
+                st.session_state.chat_display.append(
+                    {"role": "user", "text": text, "result": result}
+                )
     st.rerun()
 
 
 st.markdown("---")
 
-# ── CHAT + RESULTS LAYOUT ─────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  MAIN LAYOUT — CHAT (left) + RESULTS (right)
+# ══════════════════════════════════════════════════════════════════
+
 left_col, right_col = st.columns([1, 1], gap="large")
 
+# ── LEFT: CHAT ────────────────────────────────────────────────────
 with left_col:
-    st.markdown("### 💬 Conversation")
+    st.markdown("### 💬  Conversation")
 
-    # Reset button
-    if st.button("🗑️ Reset Conversation", use_container_width=True):
+    if st.button("🗑️  Reset Conversation", use_container_width=True):
         st.session_state.history_deque = deque(maxlen=CONTEXT_WINDOW)
         st.session_state.entity_reg    = EntityRegister()
         st.session_state.turn_idx      = 0
@@ -581,181 +514,169 @@ with left_col:
         st.session_state.chat_display  = []
         st.rerun()
 
-    # Chat display
-    chat_container = st.container(height=440)
-    with chat_container:
+    # Chat bubbles
+    chat_box = st.container(height=420)
+    with chat_box:
         if not st.session_state.chat_display:
             st.markdown(
-                "<p style='color:#4b5563;text-align:center;margin-top:80px;'>"
-                "Start typing or load a sample conversation ↑</p>",
-                unsafe_allow_html=True
+                "<p style='color:#4b5563;text-align:center;margin-top:70px;'>"
+                "Load a sample ↑ or type a message below</p>",
+                unsafe_allow_html=True,
             )
         for item in st.session_state.chat_display:
             if item["role"] == "user":
                 st.markdown(
                     f'<div class="bubble-user">👤 {item["text"]}</div>',
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
             else:
                 st.markdown(
                     f'<div class="bubble-assistant">🤖 {item["text"]}</div>',
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
 
-    # Message input
-    st.markdown("#### ✏️ Your message")
-
-    # Quick sample input suggestions
-    quick_msgs = [
-        "who is pm of india?",
-        "what are his duties?",
-        "what about uk?",
-        "compare both",
-        "brb",
-        "back — tell me about cricket",
-        "how many centuries does he have?",
-        "who founded openai?",
-    ]
+    # Quick-input buttons
     st.markdown("**Quick inputs:**")
     qcols = st.columns(4)
-    for qi, qmsg in enumerate(quick_msgs):
+    for qi, qmsg in enumerate(QUICK_MSGS):
         with qcols[qi % 4]:
-            if st.button(qmsg, key=f"quick_{qi}", use_container_width=True):
-                st.session_state["prefill_msg"] = qmsg
+            if st.button(qmsg, key=f"q{qi}", use_container_width=True):
+                st.session_state["prefill"] = qmsg
 
     user_input = st.text_input(
-        "Type your message",
-        value=st.session_state.pop("prefill_msg", ""),
-        placeholder="e.g. 'what are his duties?' or 'what about uk?'",
+        "Message",
+        value=st.session_state.pop("prefill", ""),
+        placeholder="e.g. 'what are his duties?' / 'what about uk?' / 'brb'",
         label_visibility="collapsed",
-        key="user_msg_input",
+        key="user_input",
     )
 
-    # Bot response input (for adding assistant context)
-    with st.expander("➕ Add bot response to context (optional)"):
-        bot_input = st.text_input(
+    # Optional: add bot response to context
+    with st.expander("➕  Add bot response to context"):
+        bot_text = st.text_input(
             "Bot reply",
             placeholder="e.g. 'Narendra Modi has been PM since 2014.'",
-            key="bot_msg_input",
+            key="bot_input",
         )
-        if st.button("Add bot response", use_container_width=True):
-            if bot_input.strip():
-                st.session_state.history_deque.append({"role": "assistant", "text": bot_input.strip()})
+        if st.button("Add to context", use_container_width=True):
+            if bot_text.strip():
+                st.session_state.history_deque.append(
+                    {"role": "assistant", "text": bot_text.strip()}
+                )
                 st.session_state.entity_reg.update(
-                    bot_input.strip(), st.session_state.turn_idx, st.session_state.nlp
+                    bot_text.strip(), st.session_state.turn_idx, st.session_state.nlp
                 )
                 st.session_state.turn_idx += 1
-                st.session_state.chat_display.append({"role": "assistant", "text": bot_input.strip()})
+                st.session_state.chat_display.append(
+                    {"role": "assistant", "text": bot_text.strip()}
+                )
                 st.rerun()
 
-    if st.button("🚀 Send", type="primary", use_container_width=True):
+    if st.button("🚀  Send", type="primary", use_container_width=True):
         if user_input.strip():
-            with st.spinner("Processing…"):
+            with st.spinner("⚡  Expanding + classifying…"):
                 result = process_turn(
                     user_input.strip(),
                     st.session_state.history_deque,
                     st.session_state.entity_reg,
                     st.session_state.nlp,
-                    st.session_state.llm_tok,
-                    st.session_state.llm_model,
-                    st.session_state.has_chat,
                     st.session_state.clf_l1,
                     st.session_state.clf_l2,
-                    st.session_state.device,
+                    st.session_state.groq_client,
                     st.session_state.turn_idx,
                 )
                 st.session_state.turn_idx += 1
                 st.session_state.turn_history.append(result)
-                st.session_state.chat_display.append({
-                    "role": "user", "text": user_input.strip(), "result": result
-                })
+                st.session_state.chat_display.append(
+                    {"role": "user", "text": user_input.strip(), "result": result}
+                )
             st.rerun()
 
 
-# ── RIGHT PANEL: RESULTS ──────────────────────────────────────────
+# ── RIGHT: RESULTS ────────────────────────────────────────────────
 with right_col:
-    st.markdown("### 🧠 Analysis Results")
+    st.markdown("### 🧠  Analysis Results")
 
     if not st.session_state.turn_history:
         st.markdown(
             "<p style='color:#4b5563;margin-top:80px;text-align:center;'>"
-            "Results will appear here as you send messages.</p>",
-            unsafe_allow_html=True
+            "Results appear here after each message.</p>",
+            unsafe_allow_html=True,
         )
     else:
-        # Show latest result prominently
         latest = st.session_state.turn_history[-1]
         color  = TOPIC_COLORS.get(latest.topic_l1, "#9CA3AF")
 
-        st.markdown("#### 🔎 Latest Turn")
+        st.markdown("#### 🔎  Latest Turn")
 
-        # Expanded query card
-        badge = '<span class="interrupt-badge">⏸ Interruption</span>' if latest.is_interruption \
-                else ('<span class="processing-badge">✦ Expanded</span>' if latest.was_expanded
-                      else '<span style="color:#6b7280;font-size:0.75rem;">Already complete</span>')
+        if latest.is_interruption:
+            badge = '<span class="badge-interrupt">⏸ Interruption</span>'
+        elif latest.was_expanded:
+            badge = '<span class="badge-expanded">✦ Expanded</span>'
+        else:
+            badge = '<span class="badge-complete">✓ Already complete</span>'
 
         st.markdown(f"""
-<div class="result-card">
-  <div class="label">RAW MESSAGE</div>
-  <div class="value">{latest.raw_message}</div>
+<div class="card">
+  <div class="lbl">RAW MESSAGE</div>
+  <div class="val">{latest.raw_message}</div>
 </div>
-<div class="result-card">
-  <div class="label">EXPANDED QUERY &nbsp; {badge}</div>
-  <div class="value expanded-text">{latest.expanded_query}</div>
+<div class="card">
+  <div class="lbl">EXPANDED QUERY &nbsp; {badge}</div>
+  <div class="val expanded-text">{latest.expanded_query}</div>
 </div>
 """, unsafe_allow_html=True)
 
-        # Topic pills
-        l1_bar = int(latest.topic_l1_score * 100)
-        l2_bar = int(latest.topic_l2_score * 100)
+        l1b = int(latest.topic_l1_score * 100)
+        l2b = int(latest.topic_l2_score * 100)
         st.markdown(f"""
-<div class="result-card">
-  <div class="label">TOPIC CLASSIFICATION</div>
+<div class="card">
+  <div class="lbl">TOPIC</div>
   <span class="tag-pill" style="background:{color};">{latest.topic_l1}</span>
-  <span style="color:#6b7280;font-size:1.1rem;">›</span>
-  <span class="tag-pill" style="background:{color}88;">{latest.topic_l2}</span>
+  <span style="color:#6b7280;font-size:1.1rem;"> › </span>
+  <span class="tag-pill" style="background:{color}99;">{latest.topic_l2}</span>
   <br><br>
-  <div style="display:flex;gap:16px;">
+  <div style="display:flex;gap:18px;">
     <div style="flex:1;">
-      <div style="font-size:0.72rem;color:#6b7280;">L1 confidence</div>
-      <div class="confidence-bar-wrap">
-        <div class="confidence-bar" style="width:{l1_bar}%;background:{color};"></div>
+      <div style="font-size:.7rem;color:#6b7280;">L1 confidence</div>
+      <div class="conf-wrap">
+        <div class="conf-bar" style="width:{l1b}%;background:{color};"></div>
       </div>
-      <div style="font-size:0.78rem;color:#9ca3af;margin-top:2px;">{latest.topic_l1_score:.3f}</div>
+      <div style="font-size:.75rem;color:#9ca3af;margin-top:2px;">{latest.topic_l1_score:.3f}</div>
     </div>
     <div style="flex:1;">
-      <div style="font-size:0.72rem;color:#6b7280;">L2 confidence</div>
-      <div class="confidence-bar-wrap">
-        <div class="confidence-bar" style="width:{l2_bar}%;background:{color}88;"></div>
+      <div style="font-size:.7rem;color:#6b7280;">L2 confidence</div>
+      <div class="conf-wrap">
+        <div class="conf-bar" style="width:{l2b}%;background:{color}99;"></div>
       </div>
-      <div style="font-size:0.78rem;color:#9ca3af;margin-top:2px;">{latest.topic_l2_score:.3f}</div>
+      <div style="font-size:.75rem;color:#9ca3af;margin-top:2px;">{latest.topic_l2_score:.3f}</div>
     </div>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
-        # Entities
         if latest.entities_used:
-            pills = "".join(f'<span class="entity-pill">{e}</span>' for e in latest.entities_used)
+            pills = "".join(
+                f'<span class="entity-pill">{e}</span>' for e in latest.entities_used
+            )
             st.markdown(f"""
-<div class="result-card">
-  <div class="label">ENTITIES IN CONTEXT (spaCy NER)</div>
-  <div style="margin-top:4px;">{pills}</div>
+<div class="card">
+  <div class="lbl">ENTITIES IN CONTEXT (spaCy NER)</div>
+  <div style="margin-top:5px;">{pills}</div>
 </div>
 """, unsafe_allow_html=True)
 
-        # History table
         if len(st.session_state.turn_history) > 1:
-            st.markdown("#### 📜 Turn History")
+            st.markdown("#### 📜  Turn History")
+            import pandas as pd
             rows = []
             for t in reversed(st.session_state.turn_history):
                 rows.append({
-                    "Raw": t.raw_message[:40] + ("…" if len(t.raw_message)>40 else ""),
-                    "Expanded": t.expanded_query[:50] + ("…" if len(t.expanded_query)>50 else ""),
-                    "L1": t.topic_l1,
-                    "L2": t.topic_l2,
-                    "Conf": f"{t.topic_l1_score:.2f}",
-                    "⤴": "✓" if t.was_expanded else "—",
+                    "Raw":      t.raw_message[:38] + ("…" if len(t.raw_message) > 38 else ""),
+                    "Expanded": t.expanded_query[:50] + ("…" if len(t.expanded_query) > 50 else ""),
+                    "L1":       t.topic_l1,
+                    "L2":       t.topic_l2,
+                    "Conf":     f"{t.topic_l1_score:.2f}",
+                    "⤴":        "✓" if t.was_expanded else "—",
                 })
-            import pandas as pd
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
