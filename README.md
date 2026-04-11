@@ -24,7 +24,7 @@ streamlit_app/
 ├── .gitignore
 └── .streamlit/
     ├── config.toml
-    └── secrets.toml        ← add your HF token here (not committed to git)
+    └── secrets.toml 
 ```
 
 ### 2. Install dependencies
@@ -49,7 +49,6 @@ Or just paste it in the sidebar when the app starts.
 ```bash
 streamlit run app.py
 ```
-Opens at http://localhost:8501
 
 ---
 
