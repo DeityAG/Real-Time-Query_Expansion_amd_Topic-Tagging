@@ -14,17 +14,44 @@ End-to-end Streamlit app that watches a live conversation and for every user mes
 
 ---
 
-## 🖥️ Run Locally
+# 🔍 Real-Time Query Expansion & Topic Tagging
 
-### 1. Clone / copy these files
-```
-streamlit_app/
-├── app.py
-├── requirements.txt
-├── .gitignore
-└── .streamlit/
-    ├── config.toml
-    └── secrets.toml 
+**Live Demo:** [Check out the App on Streamlit](https://gsdtepaqrm57qwsoqzz4qu.streamlit.app/)
+
+This repository contains an end-to-end conversational AI utility that monitors a live dialogue and processes every user message in real-time. It transforms implicit, context-dependent shorthand into fully self-contained questions and applies a hierarchical, two-level topic classification.
+
+## 🚀 The Problem
+In human conversation, we often use pronouns ("What are **his** duties?"), ellipsis ("And in the **UK**?"), or temporary interruptions ("Wait, **brb**"). Standard NLP systems often fail to categorize these messages correctly because they lack historical context. This system solves that by maintaining a sliding context window and an entity register.
+
+## ✨ Key Features
+* **Query Expansion:** Resolves pronouns and topic shifts using **Llama-3.1-8b-instant** (via Groq API).
+* **Hierarchical Tagging:** Categorizes queries into a 2-level hierarchy (e.g., `Politics > India` or `Sports > Cricket`).
+* **Entity Register:** Uses **spaCy NER** to track people, organizations, and locations across the last 20 messages.
+* **Interruption Handling:** Detects small talk and conversational pauses (e.g., "ok," "one sec") to bypass unnecessary LLM calls and tag them as `General`.
+* **High Performance:** Built with **DistilBERT**, achieving **95.85% accuracy** on L1 topic classification.
+
+## 🛠️ Tech Stack
+| Component | Technology |
+| :--- | :--- |
+| **Frontend** | [Streamlit](https://streamlit.io/) |
+| **LLM Inference** | [Groq](https://groq.com/) (**Llama-3.1-8b-instant**) |
+| **Topic Classifier** | Fine-tuned **DistilBERT** (hosted on Hugging Face) |
+| **NER Engine** | **spaCy** (`en_core_web_sm`) |
+| **Environment** | Python 3.10 |
+
+## 🏗️ Pipeline Architecture
+1.  **Context Management:** Maintains a sliding window of the last 20 dialogue exchanges.
+2.  **Entity Tracking:** Extracts and stores named entities (PERSON, GPE, ORG) from every turn.
+3.  **Interruption Detection:** Filters out short non-query messages.
+4.  **LLM Expansion:** Rewrites the raw message into a standalone query using the context window and entity register.
+5.  **Classification:** Runs the expanded query through L1 and L2 DistilBERT classifiers.
+
+## 📦 Installation & Setup
+
+### 1. Clone the repository
+```bash
+git clone https://github.com/DeityAG/Real-Time-Query_Expansion_amd_Topic-Tagging.git
+cd Real-Time-Query_Expansion_amd_Topic-Tagging
 ```
 
 ### 2. Install dependencies
@@ -32,72 +59,24 @@ streamlit_app/
 pip install -r requirements.txt
 ```
 
-> **Note:** `en_core_web_trf` (spaCy transformer NER) requires a one-time download.  
-> If it fails via requirements.txt, run manually:
-> ```bash
-> python -m spacy download en_core_web_trf
-> ```
-
-### 3. Set your HuggingFace token
-Edit `.streamlit/secrets.toml`:
+### 3. Configure Secrets
+Create a `.streamlit/secrets.toml` file or add these to your environment variables:
 ```toml
-HF_TOKEN = "hf_your_token_here"
+GROQ_API_KEY = "your_gsk_key_here"
+HF_TOKEN = "your_hf_token_here"
 ```
-Or just paste it in the sidebar when the app starts.
 
-### 4. Run
+### 4. Run the app
 ```bash
 streamlit run app.py
 ```
 
----
+## 📊 Model Performance
+The topic classifiers were fine-tuned on a custom dataset using `distilbert-base-uncased`. DistilBERT was chosen for its balance of speed (60% faster than BERT-base) and performance.
 
-## ☁️ Deploy to Streamlit Cloud
-
-### Step 1 — Push to GitHub
-```bash
-git init
-git add app.py requirements.txt .streamlit/config.toml .gitignore
-# DO NOT add secrets.toml
-git commit -m "initial commit"
-git remote add origin https://github.com/YOUR_USERNAME/query-expansion-app.git
-git push -u origin main
-```
-
-### Step 2 — Connect to Streamlit Cloud
-1. Go to https://share.streamlit.io
-2. Click **New app**
-3. Select your repo, branch `main`, file `app.py`
-4. Click **Advanced settings** → **Secrets** and paste:
-   ```toml
-   HF_TOKEN = "hf_your_token_here"
-   ```
-5. Click **Deploy**
-
-> ⚠️ First load takes ~3–5 minutes as models are downloaded and cached.  
-> Subsequent loads are instant (Streamlit caches with `@st.cache_resource`).
-
----
-
-## 🔧 GPU / Performance Notes
-
-| Environment | Expected speed per turn |
-|-------------|------------------------|
-| CPU only    | ~15–30s (Llama inference is slow) |
-| T4 GPU      | ~3–5s |
-| A10/A100    | <2s |
-
-For **CPU-only deployment** (Streamlit Cloud free tier), consider switching the LLM to:
-```python
-LLM_MODEL_ID = "Qwen/Qwen2-0.5B-Instruct"   # much smaller, faster on CPU
-```
-And swap NER to:
-```bash
-python -m spacy download en_core_web_sm
-```
-Then in app.py change `en_core_web_trf` → `en_core_web_sm`.
-
----
+* **L1 Accuracy:** 95.85%
+* **F1 Macro Score:** 94.07%
+* **Deployment:** Models are served directly via Hugging Face Transformers Pipelines.
 
 ## 📁 File Structure
 ```
@@ -109,3 +88,6 @@ requirements.txt     Python dependencies
 .gitignore           Excludes secrets.toml
 README.md            This file
 ```
+---
+*Developed for research in real-time conversational context resolution.*
+
