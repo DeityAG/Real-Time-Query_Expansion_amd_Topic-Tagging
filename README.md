@@ -14,8 +14,6 @@ End-to-end Streamlit app that watches a live conversation and for every user mes
 
 ---
 
-# 🔍 Real-Time Query Expansion & Topic Tagging
-
 **Live Demo:** [Check out the App on Streamlit](https://gsdtepaqrm57qwsoqzz4qu.streamlit.app/)
 
 This repository contains an end-to-end conversational AI utility that monitors a live dialogue and processes every user message in real-time. It transforms implicit, context-dependent shorthand into fully self-contained questions and applies a hierarchical, two-level topic classification.
