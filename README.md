@@ -13,7 +13,7 @@ End-to-end Streamlit app that watches a live conversation and for every user mes
 | Named Entity Recognition | `en_core_web_trf` (spaCy) |
 
 ---
-
+![Website](Website.jpeg)
 **Live Demo:** [Check out the App on Streamlit](https://gsdtepaqrm57qwsoqzz4qu.streamlit.app/)
 
 **Backend** [Checkout the Project Repo](https://github.com/DeityAG/Real-Time-Query_Expansion_amd_Topic-Tagging_backend_pipeline)
