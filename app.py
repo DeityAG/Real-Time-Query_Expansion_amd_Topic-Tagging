@@ -327,13 +327,15 @@ def process_turn(text, history_deque, entity_reg, nlp, clf_l1, clf_l2,
 # ══════════════════════════════════════════════════════════════════
 #  SIDEBAR
 # ══════════════════════════════════════════════════════════════════
-
+# Fetch keys silently from the backend
+groq_key = st.secrets.get("GROQ_API_KEY", None)
+hf_token = st.secrets.get("HF_TOKEN", None)
 with st.sidebar:
     st.markdown("## ⚙️  Configuration")
 
     # Try secrets first (Streamlit Cloud), fall back to manual input
-    groq_key_default = st.secrets.get("GROQ_API_KEY", "")
-    hf_key_default   = st.secrets.get("HF_TOKEN",     "")
+    # groq_key_default = st.secrets.get("GROQ_API_KEY", "")
+    # hf_key_default   = st.secrets.get("HF_TOKEN",     "")
 
     groq_key = st.text_input("Groq API Key", type="password",
                               value=groq_key_default,
@@ -385,7 +387,7 @@ st.markdown(
 
 # ── GATE: require both keys ───────────────────────────────────────
 if not groq_key or not hf_token:
-    st.warning("👈  Enter your **Groq API Key** and **HuggingFace Token** in the sidebar to begin.")
+    st.error("❌ **Configuration Error:** API keys are missing. Please configure `GROQ_API_KEY` and `HF_TOKEN` in your Streamlit secrets.")
 
     st.markdown("---")
     st.markdown("### 💡  How it works")
