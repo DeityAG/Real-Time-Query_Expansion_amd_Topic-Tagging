@@ -330,19 +330,10 @@ def process_turn(text, history_deque, entity_reg, nlp, clf_l1, clf_l2,
 # Fetch keys silently from the backend
 groq_key = st.secrets.get("GROQ_API_KEY", None)
 hf_token = st.secrets.get("HF_TOKEN", None)
+
 with st.sidebar:
     st.markdown("## ⚙️  Configuration")
-
-    # Try secrets first (Streamlit Cloud), fall back to manual input
-    # groq_key_default = st.secrets.get("GROQ_API_KEY", "")
-    # hf_key_default   = st.secrets.get("HF_TOKEN",     "")
-
-    groq_key = st.text_input("Groq API Key", type="password",
-                              value=groq_key_default,
-                              placeholder="gsk_...")
-    hf_token = st.text_input("HuggingFace Token", type="password",
-                              value=hf_key_default,
-                              placeholder="hf_...")
+    st.success("API Keys loaded securely from backend.")
 
     st.markdown("---")
     st.markdown("### 🔁  Pipeline")
